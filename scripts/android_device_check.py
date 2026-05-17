@@ -477,7 +477,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--install-flag",
         action="append",
         default=[],
-        help="Extra flag passed to adb install. Repeat as needed, for example --install-flag -d.",
+        help="Extra flag passed to adb install. Repeat as needed, for example --install-flag=-d.",
     )
     parser.add_argument(
         "--clear-logcat",
