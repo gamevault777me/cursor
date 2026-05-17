@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -188,6 +189,13 @@ INDEX_HTML = """<!doctype html>
 
       <button id="runCheck">Run health check</button>
 
+      <h3 style="margin-top: 2rem;">Real-time status</h3>
+      <p class="muted">Streams visible health snapshots from the selected authorized ADB device.</p>
+      <label for="streamInterval">Refresh interval, seconds</label>
+      <input id="streamInterval" type="number" min="2" max="60" value="5">
+      <button id="startRealtime">Start real-time monitor</button>
+      <button id="stopRealtime" class="secondary" disabled>Stop real-time monitor</button>
+
       <h3 style="margin-top: 2rem;">Optional APK install</h3>
       <p class="muted">APK path must exist on this controller machine.</p>
       <label for="apkPath">APK path</label>
@@ -216,6 +224,7 @@ INDEX_HTML = """<!doctype html>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    let realtimeSource = null;
 
     function setStatus(text, type = "") {
       $("statusText").textContent = text;
@@ -278,6 +287,7 @@ INDEX_HTML = """<!doctype html>
         card("Temperature", battery.temperature ? `${Number(battery.temperature) / 10} C` : "-"),
         card("Package installed", packageInfo.package ? String(packageInfo.installed) : "not checked"),
         card("Storage", (storage.mounts || []).map((m) => `${m.mounted_on}: ${m.use_percent}`).join(", ")),
+        card("Captured", snapshot.captured_at_utc),
         card("Serial", snapshot.serial),
       ].join("");
 
@@ -338,9 +348,54 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    function startRealtime() {
+      stopRealtime();
+      const params = new URLSearchParams();
+      if (selectedSerial()) params.set("serial", selectedSerial());
+      if ($("packageName").value.trim()) params.set("package", $("packageName").value.trim());
+      params.set("interval", $("streamInterval").value || "5");
+      realtimeSource = new EventSource(`/api/stream?${params.toString()}`);
+      $("startRealtime").disabled = true;
+      $("stopRealtime").disabled = false;
+      setStatus("Real-time monitor connected", "ok");
+
+      realtimeSource.addEventListener("snapshot", (event) => {
+        renderResult(JSON.parse(event.data));
+        setStatus("Real-time monitor running", "ok");
+      });
+
+      realtimeSource.addEventListener("error", (event) => {
+        if (event.data) {
+          showError(new Error(JSON.parse(event.data).error || "Real-time stream error"));
+        } else {
+          setStatus("Real-time stream disconnected", "bad");
+        }
+        stopRealtime();
+      });
+
+      realtimeSource.onerror = () => {
+        setStatus("Real-time stream disconnected", "bad");
+        stopRealtime();
+      };
+    }
+
+    function stopRealtime() {
+      if (realtimeSource) {
+        realtimeSource.close();
+        realtimeSource = null;
+      }
+      $("startRealtime").disabled = false;
+      $("stopRealtime").disabled = true;
+    }
+
     $("refreshDevices").addEventListener("click", refreshDevices);
     $("runCheck").addEventListener("click", runCheck);
     $("installApk").addEventListener("click", installApk);
+    $("startRealtime").addEventListener("click", startRealtime);
+    $("stopRealtime").addEventListener("click", () => {
+      stopRealtime();
+      setStatus("Real-time monitor stopped", "");
+    });
     refreshDevices();
   </script>
 </body>
@@ -389,6 +444,11 @@ def normalize_install_flags(flags: Any) -> list[str]:
     return normalized
 
 
+def sse_bytes(event: str, payload: dict[str, Any]) -> bytes:
+    data = json.dumps(payload, sort_keys=True)
+    return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "AndroidDeviceDashboard/1.0"
 
@@ -402,6 +462,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/check":
             self.safe_json(self.handle_check)
+            return
+        if parsed.path == "/api/stream":
+            self.handle_stream()
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -431,6 +494,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def send_sse_headers(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+    def write_sse(self, event: str, payload: dict[str, Any]) -> None:
+        self.wfile.write(sse_bytes(event, payload))
+        self.wfile.flush()
 
     def safe_json(self, handler: Any) -> None:
         try:
@@ -463,6 +537,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "snapshot": snapshot,
             "health_findings": device_check.health_findings(snapshot),
         }
+
+    def handle_stream(self) -> None:
+        params = query_params(self.path)
+        interval = safe_int(params.get("interval"), default=5, minimum=2, maximum=60)
+        package_name = params.get("package") or None
+        self.send_sse_headers()
+
+        try:
+            serial = device_check.choose_device(params.get("serial") or None)
+            while True:
+                snapshot = device_check.collect_snapshot(serial, package_name)
+                self.write_sse(
+                    "snapshot",
+                    {
+                        "ok": True,
+                        "stream": {"interval_seconds": interval},
+                        "snapshot": snapshot,
+                        "health_findings": device_check.health_findings(snapshot),
+                    },
+                )
+                time.sleep(interval)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except (SystemExit, ValueError, FileNotFoundError) as exc:
+            self.write_sse("error", {"ok": False, "error": str(exc)})
+        except subprocess.TimeoutExpired as exc:
+            self.write_sse("error", {"ok": False, "error": f"Command timed out: {' '.join(exc.cmd)}"})
+        except Exception as exc:  # noqa: BLE001 - include traceback for local lab debugging.
+            self.write_sse(
+                "error",
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
 
     def handle_install(self) -> dict[str, Any]:
         body = request_body(self)

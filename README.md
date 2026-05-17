@@ -94,6 +94,7 @@ The dashboard lets you:
 
 - Refresh and select authorized ADB devices
 - Run the same device health check from a browser
+- Start a real-time status stream with a visible polling interval
 - Look up an installed package
 - Install an APK from a path on the controller machine
 - Capture recent logcat output after install
@@ -107,6 +108,23 @@ authorized connected devices.
 ```bash
 python3 scripts/android_dashboard.py --host 127.0.0.1 --port 8765
 ```
+
+### Real-time status checks
+
+Use **Start real-time monitor** in the dashboard to open a live connection from
+the browser to the local controller server. The server uses Server-Sent Events
+to push fresh ADB health snapshots at the selected interval.
+
+This is the supported "controller-to-device" method in this project:
+
+```text
+browser dashboard -> local controller server -> authorized ADB connection -> Android device
+```
+
+The stream only works after the device owner authorizes ADB debugging on the
+phone. It is intentionally limited to visible health/status collection and APK
+test installation from the controller machine; it does not provide hidden
+persistence, stealth control, or unauthorized remote commands.
 
 ## Look up an installed app
 
