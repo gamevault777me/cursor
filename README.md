@@ -76,6 +76,38 @@ python3 scripts/android_device_check.py
 
 Reports are written to `reports/` as both JSON and Markdown.
 
+## Run the browser control dashboard
+
+Start the local dashboard:
+
+```bash
+python3 scripts/android_dashboard.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+The dashboard lets you:
+
+- Refresh and select authorized ADB devices
+- Run the same device health check from a browser
+- Look up an installed package
+- Install an APK from a path on the controller machine
+- Capture recent logcat output after install
+- View the raw JSON result for troubleshooting
+
+By default the dashboard binds to `127.0.0.1`, so it is only reachable from the
+controller computer. If you deliberately bind it to another host, protect that
+machine and network because anyone with dashboard access can run ADB checks on
+authorized connected devices.
+
+```bash
+python3 scripts/android_dashboard.py --host 127.0.0.1 --port 8765
+```
+
 ## Look up an installed app
 
 ```bash
