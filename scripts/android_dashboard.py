@@ -364,6 +364,11 @@ INDEX_HTML = """<!doctype html>
         setStatus("Real-time monitor running", "ok");
       });
 
+      realtimeSource.addEventListener("status", (event) => {
+        const payload = JSON.parse(event.data);
+        setStatus(payload.message || "Real-time monitor connected", "ok");
+      });
+
       realtimeSource.addEventListener("error", (event) => {
         if (event.data) {
           showError(new Error(JSON.parse(event.data).error || "Real-time stream error"));
@@ -543,6 +548,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         interval = safe_int(params.get("interval"), default=5, minimum=2, maximum=60)
         package_name = params.get("package") or None
         self.send_sse_headers()
+        self.write_sse("status", {"ok": True, "message": "Real-time stream connected"})
 
         try:
             serial = device_check.choose_device(params.get("serial") or None)
